@@ -1,9 +1,42 @@
 [package]
 name = "s-kademlia"
 version = "0.1.0"
-authors = ["David Craven <david@craven.ch>"]
+authors = ["bddb"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "s/kademlia in rust"
+categories = ["dht", "kademlia"]
+readme = "README.md"
 
 [dependencies]
+bytes = "0.4.12"
+bs58 = "0.3.0"
+uint = "0.8.1"
+zeroize = "1.0.0"
+time = "0.1.42"
+arrayvec = "0.5.1"
+disco = {git = "https://github.com/rust-p2p/disco", default-features = false}
+crossbeam-utils = "0.6.6"
+
+[dependencies.ed25519-dalek]
+git = "https://github.com/dvc94ch/ed25519-dalek"
+branch = "update-rand"
+
+[dev-dependencies]
+criterion = "0.3.0"
+# quickcheck = "0.9.0"
+# model = "0.1"
+
+[[bench]]
+name = "pow"
+harness = false
+
+[[bench]]
+name = "store"
+harness = false
+
+[features]
+default = ["std"]
+std = []
+
+[profile.bench]
+debug = true
