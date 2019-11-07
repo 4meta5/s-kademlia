@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 
+examples/
 todo.md
 refs/
-secrets.md
+incentives.md

@@ -12,15 +12,16 @@
 //! This project aspires to provide a flexible framework for configuring
 //! [s/kademlia](https://www.researchgate.net/publication/4319659_SKademlia_A_practicable_approach_towards_secure_key-based_routing),
 //! to enhance kademlia with certain security features.
+#![feature(todo_macro)]
 
 mod error;
-mod id;
-mod key;
+mod node_id;
 mod node;
 mod store;
 
 pub use ed25519_dalek as ed25519;
-pub use x25519_dalek as x25519;
+use async_std::prelude::*;
+use async_trait::async_trait;
 
 /*
 Implementation Details
