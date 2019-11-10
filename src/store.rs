@@ -1,41 +1,34 @@
 //! Storage (Routing Table)
-//! to be abstracted into more modular storage traits
-//! - see dynamic-sized arrays vs static routing tables
-//! (overarching goal is to partition DHT based on data type)
-//! - should use associated `PROVIDER` abstraction from libp2p
-//!
-//! Long-Term TODO: abstract storage containers into traits and macros like in Substrate
-//! -- vision is a network topology that adapts according to voting/gossip by nodes
-//! -- different data store for bloom filter cache for r5n
-//! -- different data store for PeerId membership via Brahms gossip
 use crate::node::{NodeInfo, NodeStatus};
-use crate::node_id::{NodeId, KadMetric};
-use std::{collections::VecDeque, cmp};
-// use disco::hash;
+use crate::node_id::{KadMetric, NodeId};
+use std::{cmp, collections::VecDeque};
+use crate::error::DistanceIsZero;
 
 /// Number of Buckets in a NodeTable
 const DEFAULT_BUCKET_COUNT: usize = 32;
 /// Number of Nodes in a NodeBucket
 const DEFAULT_BUCKET_SIZE: usize = 64;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NodeTable {
-    id: NodeId,
-    buckets: Vec<NodeBucket>,
-    bucket_count: usize,
+    /// The `NodeId` identifying the local peer that owns the routing table
+    pub id: NodeId,
+    /// The buckets comprising the routing table
+    pub buckets: Vec<NodeBucket>,
 }
 
 impl NodeTable {
     /// Create a new node table
     pub fn new(id: NodeId) -> Self {
-        NodeTable::new_dynamic_table(id, DEFAULT_BUCKET_COUNT, DEFAULT_BUCKET_SIZE)
+        NodeTable::new_custom_table(id, DEFAULT_BUCKET_COUNT, DEFAULT_BUCKET_SIZE)
     }
 
-    pub fn new_dynamic_table(id: NodeId, bucket_count: usize, node_count: usize) -> Self {
+    pub fn new_custom_table(id: NodeId, bucket_count: usize, node_count: usize) -> Self {
         NodeTable {
             id,
-            buckets: (0..bucket_count).map(|_| NodeBucket::new(node_count)).collect(),
-            bucket_count,
+            buckets: (0..bucket_count)
+                .map(|_| NodeBucket::new(node_count))
+                .collect(),
         }
     }
 
@@ -44,35 +37,33 @@ impl NodeTable {
         &self.buckets
     }
 
-    pub fn bucket_count(&self) -> usize {
-        self.bucket_count
-    }
-
-    fn bucket_number(&self, id: &NodeId) -> usize {
-        let diff = self.id.distance(&id);
-        // TODO: add error instead of this
-        assert!(!diff.is_zero());
-        todo!()
+    fn bucket_index(&self, id: &NodeId) -> Result<usize, DistanceIsZero> {
+        let diff = self.id.metric_distance(&id)?;
+        // this error returned from `ok_or` is actually inaccurate
+        let index = (self.buckets.len() - diff.leading_zeros() as usize).checked_sub(1).ok_or(DistanceIsZero);
+        index
     }
 
     pub fn update(&mut self, node: &NodeInfo) -> bool {
         assert!(node.id != self.id);
-        let bucket = self.bucket_number(&node.id);
+        let bucket = self.bucket_index(&node.id).unwrap();
         self.buckets[bucket].update(node)
     }
 
     pub fn find(&self, id: &NodeId, count: usize) -> Vec<NodeInfo> {
         assert!(count > 0 && *id != self.id);
 
-        let mut nodes_found: Vec<_> = self.buckets.iter().flat_map(|b| &b.nodes)
-                                                    .map(|n| n.clone())
-                                                    .collect();
-        nodes_found.sort_by_key(|n| n.id.distance(&id));
+        let mut nodes_found: Vec<_> = self
+            .buckets
+            .iter()
+            .flat_map(|b| &b.nodes)
+            .map(|n| n.clone())
+            .collect();
+        nodes_found.sort_by_key(|n| n.id.distance(&id).unwrap());
         nodes_found[0..cmp::min(count, nodes_found.len())].to_vec()
     }
 
     pub fn pop_oldest(&mut self) -> Vec<NodeInfo> {
-        // TODO: TTL (and more generic) cache
         self.buckets
             .iter_mut()
             .filter(|b| !b.nodes.is_empty() && b.node_count == b.nodes.len())
@@ -81,11 +72,10 @@ impl NodeTable {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NodeBucket {
-    // TODO: make into VecDequeue if aligns with eviction policy
-    nodes: VecDeque<NodeInfo>,
-    node_count: usize,
+    pub nodes: VecDeque<NodeInfo>,
+    pub node_count: usize,
 }
 
 impl NodeBucket {
@@ -113,7 +103,7 @@ impl NodeBucket {
         match (full_bucket, in_bucket) {
             (true, false) => {
                 // TODO: add new kbucket and do any necessary reordering
-                // replace bool return value with Result and specific error type
+                // replace bool return value with Result and specific error type?
                 false
             }
             (false, true) => {
@@ -129,35 +119,32 @@ impl NodeBucket {
     }
 
     fn promote_to_top(&mut self, node: NodeInfo) {
-        let mut all_nodes = self.nodes
-                            .iter()
-                            // filter out node in question
-                            .filter(|n| n.id != node.id)
-                            .cloned()
-                            .collect::<VecDeque<NodeInfo>>();
+        let mut all_nodes = self
+            .nodes
+            .iter()
+            // filter out node in question
+            .filter(|n| n.id != node.id)
+            .cloned()
+            .collect::<VecDeque<NodeInfo>>();
         // push to the tail of the list
         all_nodes.push_back(node.clone());
         self.nodes = all_nodes;
     }
 
+    // TODO: only include count if searching for multiple ids
     pub fn find(&self, id: &NodeId, count: usize) -> Vec<NodeInfo> {
         let mut nodes_copy: Vec<_> = self.nodes.iter().map(|n| n.clone()).collect();
-        nodes_copy.sort_by_key(|n| n.id.distance(&id));
+        // TODO: propagate `found_self` error instead of unwrapping
+        nodes_copy.sort_by_key(|n| n.id.distance(&id).unwrap());
         nodes_copy[0..cmp::min(count, nodes_copy.len())].to_vec()
     }
 }
 
-// Eviction Policy
-//
-// TODO: least-recently seen eviction policy, except live nodes are never removed from the list
-// When a kademlia node receives any message (request or reply)
-// from another node, it updates the appropriate k-bucket for the sender's
-// nodeID. 
-// - If the sending node already exists in the recipient's k-bucket and the bucket
-// has fewer than k entries, then the recipient just inserts the new sender at the tail
-// of the list.
-// - If the appropriate k-bucket is full, then the recipient pings the k-bucket's
-// least recently seen node. 
-// -- If it fails to respond, it's evicted and new node is inserted
-// -- else (if it responds), the least recently seen node is moved to the tail
-// of the list, and the new sender's contact is discarded
+#[cfg(test)]
+mod tests {
+    use super::{NodeTable, NodeBucket};
+    use crate::node::NodeInfo;
+    use crate::node_id::{NodeId, KadMetric};
+
+    // TODO
+}
