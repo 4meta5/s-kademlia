@@ -13,9 +13,6 @@
 // to enhance kademlia with certain security features.
 #![feature(todo_macro)]
 
-#[macro_use]
-extern crate failure;
-
 // testing and error handling
 mod error;
 mod util;
@@ -25,5 +22,7 @@ mod config;
 mod node;
 mod node_id;
 mod store;
+
+pub use node_id::NodeId;
 
 pub use ed25519_dalek as ed25519;

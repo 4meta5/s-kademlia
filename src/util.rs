@@ -2,7 +2,7 @@
 use crate::node_id::NodeId;
 use disco::DiscoHash;
 
-// should be useful for testing purposes
+// for testing purposes only (TODO: remove in lieu of `quickcheck`)
 pub trait Random<T> {
     fn random(len: usize) -> T;
 }
@@ -16,14 +16,15 @@ impl Random<NodeId> for NodeId {
     }
 }
 
-// (2) test scaffolding
 #[cfg(test)]
 pub mod test {
     use crate::node::{NodeInfo, NodeStatus};
     use crate::node_id::NodeId;
     use crate::store::{NodeBucket, NodeTable};
+    use crate::ed25519::Keypair;
     use std::collections::VecDeque;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use rand;
 
     pub static ADDR: &'static str = "127.0.0.1:8008";
 
@@ -37,8 +38,9 @@ pub mod test {
 
     #[test]
     fn new_node_info_succeeds() {
-        let id = NodeId::generate();
-        let new_node = new_node_info(id);
+        let key = Keypair::generate(&mut rand::thread_rng());
+        let node_id = NodeId::from_public_key(key.public);
+        let new_node = new_node_info(node_id);
         assert_eq!(new_node.port(), 8080);
         assert_eq!(new_node.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
     }
@@ -50,8 +52,9 @@ pub mod test {
         };
         // should prevent duplicate NodeId generation eventually
         for i in 0..node_count {
-            let id = NodeId::generate();
-            let new_node = new_node_info(id);
+            let key = Keypair::generate(&mut rand::thread_rng());
+            let node_id = NodeId::from_public_key(key.public);
+            let new_node = new_node_info(node_id);
             bucket.nodes.push_back(new_node);
         }
         bucket

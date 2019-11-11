@@ -1,4 +1,4 @@
-use crate::ed25519::{Keypair, PublicKey};
+use crate::ed25519::{Keypair, PublicKey, Signature};
 use crate::error::{DistanceIsZero, ParseError};
 use crate::node::NodeInfo;
 use bs58;
@@ -44,37 +44,6 @@ impl NodeId {
         NodeId { discohash: keyhash }
     }
 
-    /// Generate NodeId
-    ///
-    /// Default no hard mechanism for slowing id generation
-    #[inline]
-    pub fn generate() -> NodeId {
-        // TODO: private key must be stored somewhere for signing messages?
-        let key = Keypair::generate(&mut rand::thread_rng());
-        let keyhash = hash(key.public.as_bytes(), 32);
-        NodeId { discohash: keyhash }
-    }
-
-    /// Generate NodeId with Resistance
-    ///
-    /// Requires disco::hash(public_key) to be have `difficulty` number of trailing zeros
-    /// WARNING: loop could keep running for a long time (no benchmarking done yet)
-    pub fn hard_generate(difficulty: usize) -> NodeId {
-        loop {
-            let new_id = NodeId::generate();
-            let mut success = true;
-            // default leading zeros
-            for i in 0..difficulty {
-                if new_id.discohash.get(i).unwrap() != &0u8 {
-                    success = false;
-                }
-            }
-            if success {
-                return new_id;
-            }
-        }
-    }
-
     #[inline]
     pub fn to_base58(&self) -> String {
         bs58::encode(self.discohash.as_slice()).into_string()
@@ -110,12 +79,8 @@ impl NodeId {
     /// Verify Signature
     ///
     /// verify message signature made with the public key associated with this NodeId
-    pub fn verify_msg(message: &[u8], signature: &[u8], public_key: &[u8]) -> bool {
-        // change receive type to an error on verifying signatures
-
-        // would need to use the sign method in Node
-        // or take a signature
-        todo!();
+    pub fn verify(pubkey: PublicKey, msg: &[u8], sig: &[u8]) -> bool {
+        Signature::from_bytes(sig).and_then(|s| pubkey.verify(msg, &s)).is_ok()
     }
 }
 
@@ -171,31 +136,15 @@ pub trait KadMetric: PartialEq + Clone + fmt::Debug {
     type Err;
     type Metric;
 
-    fn distance(&self, other: &Self) -> Result<Self, Self::Err>;
     // used in `store` specifically
-    fn metric_distance(&self, other: &Self) -> Result<Self::Metric, Self::Err>;
+    fn distance(&self, other: &Self) -> Result<Self::Metric, Self::Err>;
 }
 
 impl KadMetric for NodeId {
     type Err = DistanceIsZero;
     type Metric = U256;
 
-    fn distance(&self, other: &NodeId) -> Result<NodeId, DistanceIsZero> {
-        let dist = self
-            .discohash
-            .iter()
-            .zip(other.discohash.iter())
-            .map(|(first, second)| first ^ second)
-            .collect();
-        let metric_node = NodeId { discohash: dist };
-        if metric_node.is_zero() {
-            return Err(DistanceIsZero);
-        } else {
-            return Ok(metric_node);
-        }
-    }
-
-    fn metric_distance(&self, other: &NodeId) -> Result<U256, DistanceIsZero> {
+    fn distance(&self, other: &NodeId) -> Result<U256, DistanceIsZero> {
         let a = U256::from(self.discohash.clone().as_slice());
         let b = U256::from(other.discohash.clone().as_slice());
         // xor
@@ -211,7 +160,7 @@ impl KadMetric for NodeId {
 #[cfg(test)]
 mod tests {
     use super::{KadMetric, NodeId};
-    use crate::ed25519::Keypair;
+    use crate::ed25519::{Keypair, PublicKey, Signature};
     use crate::error::{DistanceIsZero, ParseError};
     use disco::hash;
     use rand;
@@ -234,29 +183,29 @@ mod tests {
     #[test]
     fn node_id_is_public_key() {
         let key = Keypair::generate(&mut rand::thread_rng());
-        let keyhash = hash(key.public.as_bytes(), 32);
-        let node_id = NodeId { discohash: keyhash };
+        let node_id = NodeId::from_public_key(key.public);
         assert!(node_id.is_public_key(key.public));
     }
 
     #[test]
-    fn distance_works() {
-        let node_id = NodeId::generate();
-        let clone_node_id = node_id.clone();
-        let distance = &node_id.distance(&clone_node_id);
-        let new_node_id = NodeId::generate();
-        let distance2 = &node_id.distance(&new_node_id);
-        assert_eq!(distance.as_ref().unwrap_err(), &DistanceIsZero);
-        // assert!(distance2.as_ref().unwrap() != &DistanceIsZero); // if uncommented, compiler error below generated `=>` ok I guess
-        //                                      ^^ no implementation for `node_id::NodeId == error::DistanceIsZero`
+    fn sign_and_verify_works() {
+        let kp = Keypair::generate(&mut rand::thread_rng());
+        let node_id = NodeId::from_public_key(kp.public);
+        let msg = vec![1u8; 32];
+        let msg_copy = msg.clone();
+        let sig = kp.sign(&msg.as_slice()).to_bytes();
+        assert!(NodeId::verify(kp.public, msg_copy.as_slice(), &sig));
     }
 
     #[test]
-    fn metric_distance_works() {
-        let node_id = NodeId::generate();
+    fn distance_works() {
+        let key = Keypair::generate(&mut rand::thread_rng());
+        let node_id = NodeId::from_public_key(key.public);
         let clone_node_id = node_id.clone();
-        let distance = &node_id.metric_distance(&clone_node_id);
-        let new_node_id = NodeId::generate();
+        let distance = &node_id.distance(&clone_node_id);
+        // distance from other key
+        let new_key = Keypair::generate(&mut rand::thread_rng());
+        let new_node_id = NodeId::from_public_key(new_key.public);
         let distance2 = &node_id.distance(&new_node_id);
         assert_eq!(distance.as_ref().unwrap_err(), &DistanceIsZero);
         // assert!(distance2.as_ref().unwrap() != &DistanceIsZero); // if uncommented, compiler error below generated `=>` ok I guess
@@ -265,16 +214,17 @@ mod tests {
 
     #[test]
     fn to_base58_then_back() {
-        let node_id = NodeId::generate();
+        let key = Keypair::generate(&mut rand::thread_rng());
+        let node_id = NodeId::from_public_key(key.public);
         let second: NodeId = node_id.to_base58().parse().unwrap();
         assert_eq!(node_id, second);
     }
 
     #[test]
     fn incorrect_length_yields_parse_error() {
-        let mut big_data = vec![1u8; 33];
-        let mut little_data = vec![1u8; 31];
-        let mut ok_data = vec![1u8; 32];
+        let big_data = vec![1u8; 33];
+        let little_data = vec![1u8; 31];
+        let ok_data = vec![1u8; 32];
         assert_eq!(NodeId::from_bytes(big_data).unwrap_err(), ParseError);
         assert_eq!(NodeId::from_bytes(little_data).unwrap_err(), ParseError);
         assert!(NodeId::from_bytes(ok_data).is_ok());
